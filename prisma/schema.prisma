@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Platform {
+  LINKEDIN
+  X
+  INSTAGRAM
+  REDDIT
+}
+
+enum DraftStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  POSTED
+}
+
+enum ActivityType {
+  POST
+  DRAFT
+  MENTION
+  COMMENT
+  SAVED
+}
+
+enum ConnectionStatus {
+  DISCONNECTED
+  CONNECTED
+  ERROR
+}
+
+model Persona {
+  id              String               @id @default(cuid())
+  name            String
+  primaryHandle   String
+  avatarUrl       String?
+  age             Int?
+  location        String?
+  politicalStance String?
+  tone            String?
+  bioMarkdown     String               @default("")
+  timezone        String               @default("UTC")
+  canvasX         Float                @default(0)
+  canvasY         Float                @default(0)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  platforms       PersonaPlatform[]
+  drafts          Draft[]
+  activityItems   ActivityItem[]
+  credentials     PlatformCredential[]
+}
+
+model PersonaPlatform {
+  id                  String           @id @default(cuid())
+  personaId           String
+  platform            Platform
+  styleGuideMarkdown  String           @default("")
+  referenceAccountUrl String?
+  connectionStatus    ConnectionStatus @default(DISCONNECTED)
+  lastTestedAt        DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  persona             Persona          @relation(fields: [personaId], references: [id], onDelete: Cascade)
+
+  @@unique([personaId, platform])
+}
+
+model Draft {
+  id          String      @id @default(cuid())
+  personaId   String
+  platform    Platform
+  content     String
+  status      DraftStatus @default(PENDING)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  approvedAt  DateTime?
+  rejectedAt  DateTime?
+  publishedAt DateTime?
+  persona     Persona     @relation(fields: [personaId], references: [id], onDelete: Cascade)
+}
+
+model ActivityItem {
+  id        String       @id @default(cuid())
+  personaId String
+  platform  Platform?
+  type      ActivityType
+  content   String
+  sourceUrl String?
+  metadata  Json?
+  createdAt DateTime     @default(now())
+  persona   Persona      @relation(fields: [personaId], references: [id], onDelete: Cascade)
+}
+
+model PlatformCredential {
+  id             String           @id @default(cuid())
+  personaId      String
+  platform       Platform
+  apiKey         String
+  apiSecret      String?
+  accessToken    String?
+  refreshToken   String?
+  connectionHint String?
+  lastTestStatus ConnectionStatus @default(DISCONNECTED)
+  lastTestedAt   DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  persona        Persona          @relation(fields: [personaId], references: [id], onDelete: Cascade)
+
+  @@unique([personaId, platform])
+}
