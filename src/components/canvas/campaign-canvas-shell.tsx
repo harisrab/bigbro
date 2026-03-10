@@ -5,9 +5,9 @@ import {
   Bell,
   ChevronLeft,
   ChevronRight,
+  Megaphone,
   Plus,
   Radar,
-  Search,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -22,7 +22,24 @@ import {
 } from "reactflow";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { createPersonaAction, updatePersonaPositionAction } from "@/lib/actions/personas";
+import {
+  createPersonaAction,
+  testPersonaPlatformConnectionAction,
+  updatePersonaPlatformCredentialAction,
+  updatePersonaPlatformStyleAction,
+  updatePersonaPositionAction,
+  updatePersonaProfileAction,
+} from "@/lib/actions/personas";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import "reactflow/dist/style.css";
 
 type PlatformName = "LINKEDIN" | "X" | "INSTAGRAM" | "REDDIT";
@@ -44,11 +61,39 @@ type CanvasPersona = {
   platforms: Array<{
     platform: PlatformName;
     connectionStatus: ConnectionStatus;
+    styleGuideMarkdown: string;
+    lastTestedAt: string | null;
+    credential: {
+      apiKey: string;
+      apiSecret: string | null;
+      accessToken: string | null;
+      refreshToken: string | null;
+      connectionHint: string | null;
+    } | null;
   }>;
 };
 
 type PersonaNodeData = {
   persona: CanvasPersona;
+};
+
+type ProfileDraft = {
+  name: string;
+  primaryHandle: string;
+  age: string;
+  location: string;
+  politicalStance: string;
+  tone: string;
+  bioMarkdown: string;
+  timezone: string;
+};
+
+type PlatformCredentialDraft = {
+  apiKey: string;
+  apiSecret: string;
+  accessToken: string;
+  refreshToken: string;
+  connectionHint: string;
 };
 
 const PLATFORM_LABELS: Record<PlatformName, string> = {
@@ -57,14 +102,66 @@ const PLATFORM_LABELS: Record<PlatformName, string> = {
   INSTAGRAM: "ig",
   REDDIT: "rd",
 };
+const PLATFORM_NAMES: Record<PlatformName, string> = {
+  LINKEDIN: "LinkedIn",
+  X: "X",
+  INSTAGRAM: "Instagram",
+  REDDIT: "Reddit",
+};
+const STATUS_LABELS: Record<ConnectionStatus, string> = {
+  CONNECTED: "Active",
+  DISCONNECTED: "Offline",
+  ERROR: "Issue",
+};
 
-const PLATFORM_FILTERS: Array<{ label: string; value: "ALL" | PlatformName }> = [
-  { label: "All Platforms", value: "ALL" },
-  { label: "LinkedIn", value: "LINKEDIN" },
-  { label: "X", value: "X" },
-  { label: "Instagram", value: "INSTAGRAM" },
-  { label: "Reddit", value: "REDDIT" },
-];
+type Narrative = {
+  id: string;
+  title: string;
+  description: string;
+  status: "active" | "draft";
+  personaSettings: NarrativePersonaSettings[];
+};
+
+type NarrativePersonaSettings = {
+  personaId: string;
+  postCaps: Record<PlatformName, number>;
+};
+
+type NarrativeFormDraft = {
+  title: string;
+  description: string;
+};
+
+const DEFAULT_PERSONA_POST_CAPS: Record<PlatformName, number> = {
+  LINKEDIN: 0,
+  X: 0,
+  INSTAGRAM: 0,
+  REDDIT: 0,
+};
+
+const PLATFORM_LIST: PlatformName[] = ["LINKEDIN", "X", "INSTAGRAM", "REDDIT"];
+const PLATFORM_CREDENTIAL_BLANK: PlatformCredentialDraft = {
+  apiKey: "",
+  apiSecret: "",
+  accessToken: "",
+  refreshToken: "",
+  connectionHint: "",
+};
+
+function buildNarrativePostCaps(): Record<PlatformName, number> {
+  return { ...DEFAULT_PERSONA_POST_CAPS };
+}
+
+function countScheduledPosts(settings: NarrativePersonaSettings[]) {
+  return settings.reduce(
+    (total, setting) => total + PLATFORM_LIST.reduce((sum, platform) => sum + (setting.postCaps[platform] ?? 0), 0),
+    0,
+  );
+}
+
+function canActivateNarrative(narrative: Narrative) {
+  return narrative.personaSettings.length > 0 && countScheduledPosts(narrative.personaSettings) > 0;
+}
 
 function buildNodes(personas: CanvasPersona[]): Node<PersonaNodeData>[] {
   return personas.map((persona) => ({
@@ -78,32 +175,118 @@ function buildNodes(personas: CanvasPersona[]): Node<PersonaNodeData>[] {
   }));
 }
 
+function buildProfileDraft(persona: CanvasPersona): ProfileDraft {
+  return {
+    name: persona.name,
+    primaryHandle: persona.primaryHandle,
+    age: persona.age?.toString() ?? "",
+    location: persona.location ?? "",
+    politicalStance: persona.politicalStance ?? "",
+    tone: persona.tone ?? "",
+    bioMarkdown: persona.bioMarkdown ?? "",
+    timezone: "UTC",
+  };
+}
+
+function buildStyleDraft(persona: CanvasPersona): Record<PlatformName, string> {
+  return {
+    LINKEDIN: persona.platforms.find((platform) => platform.platform === "LINKEDIN")?.styleGuideMarkdown ?? "",
+    X: persona.platforms.find((platform) => platform.platform === "X")?.styleGuideMarkdown ?? "",
+    INSTAGRAM:
+      persona.platforms.find((platform) => platform.platform === "INSTAGRAM")?.styleGuideMarkdown ?? "",
+    REDDIT: persona.platforms.find((platform) => platform.platform === "REDDIT")?.styleGuideMarkdown ?? "",
+  };
+}
+
+function buildCredentialDraft(persona: CanvasPersona): Record<PlatformName, PlatformCredentialDraft> {
+  const byPlatform = new Map(persona.platforms.map((platform) => [platform.platform, platform]));
+
+  return {
+    LINKEDIN: {
+      apiKey: byPlatform.get("LINKEDIN")?.credential?.apiKey ?? "",
+      apiSecret: byPlatform.get("LINKEDIN")?.credential?.apiSecret ?? "",
+      accessToken: byPlatform.get("LINKEDIN")?.credential?.accessToken ?? "",
+      refreshToken: byPlatform.get("LINKEDIN")?.credential?.refreshToken ?? "",
+      connectionHint: byPlatform.get("LINKEDIN")?.credential?.connectionHint ?? "",
+    },
+    X: {
+      apiKey: byPlatform.get("X")?.credential?.apiKey ?? "",
+      apiSecret: byPlatform.get("X")?.credential?.apiSecret ?? "",
+      accessToken: byPlatform.get("X")?.credential?.accessToken ?? "",
+      refreshToken: byPlatform.get("X")?.credential?.refreshToken ?? "",
+      connectionHint: byPlatform.get("X")?.credential?.connectionHint ?? "",
+    },
+    INSTAGRAM: {
+      apiKey: byPlatform.get("INSTAGRAM")?.credential?.apiKey ?? "",
+      apiSecret: byPlatform.get("INSTAGRAM")?.credential?.apiSecret ?? "",
+      accessToken: byPlatform.get("INSTAGRAM")?.credential?.accessToken ?? "",
+      refreshToken: byPlatform.get("INSTAGRAM")?.credential?.refreshToken ?? "",
+      connectionHint: byPlatform.get("INSTAGRAM")?.credential?.connectionHint ?? "",
+    },
+    REDDIT: {
+      apiKey: byPlatform.get("REDDIT")?.credential?.apiKey ?? "",
+      apiSecret: byPlatform.get("REDDIT")?.credential?.apiSecret ?? "",
+      accessToken: byPlatform.get("REDDIT")?.credential?.accessToken ?? "",
+      refreshToken: byPlatform.get("REDDIT")?.credential?.refreshToken ?? "",
+      connectionHint: byPlatform.get("REDDIT")?.credential?.connectionHint ?? "",
+    },
+  };
+}
+
 function PersonaNode({ data, selected }: NodeProps<PersonaNodeData>) {
   const { persona } = data;
+  const platformStates = PLATFORM_LIST.map((platform) => {
+    const found = persona.platforms.find((entry) => entry.platform === platform);
+    return {
+      platform,
+      status: found?.connectionStatus ?? "DISCONNECTED",
+    } as const;
+  });
+  const activeCount = platformStates.filter((entry) => entry.status === "CONNECTED").length;
+  const issueCount = platformStates.filter((entry) => entry.status === "ERROR").length;
 
   return (
     <div className={`persona-node ${selected ? "persona-node-selected" : ""}`}>
-      <div className="persona-node-header">
-        <div className="persona-avatar">{persona.name.slice(0, 1).toUpperCase()}</div>
-        <div>
-          <p className="persona-name">{persona.name}</p>
-          <p className="persona-handle">{persona.primaryHandle}</p>
+      <div className="persona-node-top">
+        <div className="persona-node-header">
+          <div className="persona-avatar">{persona.name.slice(0, 1).toUpperCase()}</div>
+          <div>
+            <p className="persona-name">{persona.name}</p>
+            <p className="persona-handle">{persona.primaryHandle}</p>
+          </div>
+        </div>
+        <div className={`persona-live-badge ${activeCount > 0 ? "persona-live-active" : "persona-live-idle"}`}>
+          {activeCount}/4 Active
         </div>
       </div>
 
-      <div className="persona-platforms">
-        {(["LINKEDIN", "X", "INSTAGRAM", "REDDIT"] as PlatformName[]).map((platform) => {
-          const found = persona.platforms.find((entry) => entry.platform === platform);
-          return (
-            <span
-              key={platform}
-              className={`platform-pill platform-${(found?.connectionStatus ?? "DISCONNECTED").toLowerCase()}`}
-              title={`${platform}: ${found?.connectionStatus ?? "DISCONNECTED"}`}
-            >
-              {PLATFORM_LABELS[platform]}
+      <div className="persona-summary-row">
+        <span>{issueCount > 0 ? `${issueCount} issue${issueCount > 1 ? "s" : ""}` : "No issues"}</span>
+        <span>{persona.pendingDrafts} pending</span>
+      </div>
+
+      <div className="persona-platform-grid">
+        {platformStates.map((entry) => (
+          <div key={entry.platform} className={`platform-chip platform-chip-${entry.status.toLowerCase()}`}>
+            <span className="platform-chip-brand">
+              <span className="platform-chip-mark">{PLATFORM_LABELS[entry.platform]}</span>
+              {PLATFORM_NAMES[entry.platform]}
             </span>
-          );
-        })}
+            <span className="platform-chip-state">
+              <span className={`status-dot status-dot-${entry.status.toLowerCase()}`} />
+              {STATUS_LABELS[entry.status]}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="persona-platform-track" aria-hidden="true">
+        {platformStates.map((entry) => (
+          <span
+            key={entry.platform}
+            className={`persona-platform-segment persona-platform-segment-${entry.status.toLowerCase()}`}
+          />
+        ))}
       </div>
     </div>
   );
@@ -116,13 +299,38 @@ const nodeTypes: NodeTypes = {
 export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: CanvasPersona[] }) {
   const router = useRouter();
   const [nodes, setNodes, onNodesChange] = useNodesState<PersonaNodeData>(buildNodes(initialPersonas));
-  const [search, setSearch] = useState("");
-  const [platformFilter, setPlatformFilter] = useState<"ALL" | PlatformName>("ALL");
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(initialPersonas[0]?.id ?? null);
+  const [selectedPlatform, setSelectedPlatform] = useState<PlatformName>("LINKEDIN");
   const [cockpitOpen, setCockpitOpen] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [cockpitStatus, setCockpitStatus] = useState<string | null>(null);
+  const [cockpitError, setCockpitError] = useState<string | null>(null);
+  const [profileDraft, setProfileDraft] = useState<ProfileDraft | null>(null);
+  const [styleDraft, setStyleDraft] = useState<Record<PlatformName, string>>({
+    LINKEDIN: "",
+    X: "",
+    INSTAGRAM: "",
+    REDDIT: "",
+  });
+  const [credentialDraft, setCredentialDraft] = useState<Record<PlatformName, PlatformCredentialDraft>>({
+    LINKEDIN: { ...PLATFORM_CREDENTIAL_BLANK },
+    X: { ...PLATFORM_CREDENTIAL_BLANK },
+    INSTAGRAM: { ...PLATFORM_CREDENTIAL_BLANK },
+    REDDIT: { ...PLATFORM_CREDENTIAL_BLANK },
+  });
+  const [narratives, setNarratives] = useState<Narrative[]>([]);
+  const [narrativeSidebarOpen, setNarrativeSidebarOpen] = useState(false);
+  const [selectedNarrativeId, setSelectedNarrativeId] = useState<string | null>(null);
+  const [showCreateNarrativeForm, setShowCreateNarrativeForm] = useState(false);
+  const [narrativeFormDraft, setNarrativeFormDraft] = useState<NarrativeFormDraft>({ title: "", description: "" });
+  const [narrativeFormError, setNarrativeFormError] = useState<string | null>(null);
+
+  const [isMutating, startTransition] = useTransition();
+  const [isSavingProfile, startProfileSave] = useTransition();
+  const [isSavingStyle, startStyleSave] = useTransition();
+  const [isSavingCredential, startCredentialSave] = useTransition();
+  const [isTestingConnection, startConnectionTest] = useTransition();
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance<PersonaNodeData> | null>(
     null,
   );
@@ -138,29 +346,96 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
     });
   }, [initialPersonas, setNodes]);
 
-  const visibleNodes = useMemo(() => {
-    const normalizedSearch = search.trim().toLowerCase();
-
-    return nodes.filter((node) => {
-      const persona = node.data.persona;
-
-      const matchesSearch =
-        normalizedSearch.length === 0 ||
-        persona.name.toLowerCase().includes(normalizedSearch) ||
-        persona.primaryHandle.toLowerCase().includes(normalizedSearch);
-
-      const matchesPlatform =
-        platformFilter === "ALL" ||
-        persona.platforms.some((platform) => platform.platform === platformFilter);
-
-      return matchesSearch && matchesPlatform;
-    });
-  }, [nodes, search, platformFilter]);
-
   const selectedPersona = useMemo(
     () => nodes.find((node) => node.id === selectedPersonaId)?.data.persona ?? null,
     [nodes, selectedPersonaId],
   );
+
+  useEffect(() => {
+    if (!selectedPersona) {
+      setProfileDraft(null);
+      setStyleDraft({ LINKEDIN: "", X: "", INSTAGRAM: "", REDDIT: "" });
+      setCredentialDraft({
+        LINKEDIN: { ...PLATFORM_CREDENTIAL_BLANK },
+        X: { ...PLATFORM_CREDENTIAL_BLANK },
+        INSTAGRAM: { ...PLATFORM_CREDENTIAL_BLANK },
+        REDDIT: { ...PLATFORM_CREDENTIAL_BLANK },
+      });
+      return;
+    }
+
+    setProfileDraft(buildProfileDraft(selectedPersona));
+    setStyleDraft(buildStyleDraft(selectedPersona));
+    setCredentialDraft(buildCredentialDraft(selectedPersona));
+    setCockpitStatus(null);
+    setCockpitError(null);
+  }, [selectedPersona]);
+
+  const selectedNarrative = useMemo(
+    () => narratives.find((n) => n.id === selectedNarrativeId) ?? null,
+    [narratives, selectedNarrativeId],
+  );
+
+  const allPersonas = useMemo(() => nodes.map((node) => node.data.persona), [nodes]);
+
+  const selectedPlatformMeta = useMemo(
+    () => selectedPersona?.platforms.find((platform) => platform.platform === selectedPlatform) ?? null,
+    [selectedPersona, selectedPlatform],
+  );
+  const isLinkedInPlatform = selectedPlatform === "LINKEDIN";
+
+  const handleCreateNarrative = () => {
+    const title = narrativeFormDraft.title.trim();
+    if (!title) {
+      setNarrativeFormError("Title is required.");
+      return;
+    }
+    const newNarrative: Narrative = {
+      id: Math.random().toString(36).slice(2) + Date.now().toString(36),
+      title,
+      description: narrativeFormDraft.description.trim(),
+      status: "draft",
+      assignedPersonaIds: [],
+      postCaps: { ...DEFAULT_POST_CAPS },
+    };
+    setNarratives((current) => [...current, newNarrative]);
+    setSelectedNarrativeId(newNarrative.id);
+    setNarrativeSidebarOpen(true);
+    setShowCreateNarrativeForm(false);
+    setNarrativeFormDraft({ title: "", description: "" });
+    setNarrativeFormError(null);
+  };
+
+  const handleToggleNarrativePersona = (narrativeId: string, personaId: string) => {
+    setNarratives((current) =>
+      current.map((n) =>
+        n.id !== narrativeId
+          ? n
+          : {
+              ...n,
+              assignedPersonaIds: n.assignedPersonaIds.includes(personaId)
+                ? n.assignedPersonaIds.filter((id) => id !== personaId)
+                : [...n.assignedPersonaIds, personaId],
+            },
+      ),
+    );
+  };
+
+  const handleUpdateNarrativePostCap = (narrativeId: string, platform: PlatformName, value: number) => {
+    setNarratives((current) =>
+      current.map((n) =>
+        n.id !== narrativeId ? n : { ...n, postCaps: { ...n.postCaps, [platform]: value } },
+      ),
+    );
+  };
+
+  const handleToggleNarrativeStatus = (narrativeId: string) => {
+    setNarratives((current) =>
+      current.map((n) =>
+        n.id !== narrativeId ? n : { ...n, status: n.status === "active" ? "draft" : "active" },
+      ),
+    );
+  };
 
   const handleCreatePersona = async (formData: FormData) => {
     setCreateError(null);
@@ -191,11 +466,127 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
     });
   };
 
+  const handleSaveProfile = () => {
+    if (!selectedPersona || !profileDraft) {
+      return;
+    }
+
+    setCockpitError(null);
+    setCockpitStatus(null);
+
+    startProfileSave(async () => {
+      const ageNumber = profileDraft.age.trim().length > 0 ? Number(profileDraft.age) : undefined;
+
+      const result = await updatePersonaProfileAction({
+        personaId: selectedPersona.id,
+        name: profileDraft.name,
+        primaryHandle: profileDraft.primaryHandle,
+        avatarUrl: "",
+        age: Number.isFinite(ageNumber) ? ageNumber : undefined,
+        location: profileDraft.location,
+        politicalStance: profileDraft.politicalStance,
+        tone: profileDraft.tone,
+        bioMarkdown: profileDraft.bioMarkdown,
+        timezone: profileDraft.timezone,
+      });
+
+      if (!result.ok) {
+        setCockpitError(result.error);
+        return;
+      }
+
+      setCockpitStatus("Profile saved.");
+      router.refresh();
+    });
+  };
+
+  const handleSaveStyleGuide = () => {
+    if (!selectedPersona) {
+      return;
+    }
+
+    setCockpitError(null);
+    setCockpitStatus(null);
+
+    startStyleSave(async () => {
+      const result = await updatePersonaPlatformStyleAction({
+        personaId: selectedPersona.id,
+        platform: selectedPlatform,
+        styleGuideMarkdown: styleDraft[selectedPlatform] ?? "",
+      });
+
+      if (!result.ok) {
+        setCockpitError(result.error);
+        return;
+      }
+
+      setCockpitStatus(`${selectedPlatform} style guide saved.`);
+      router.refresh();
+    });
+  };
+
+  const handleSaveCredential = () => {
+    if (!selectedPersona) {
+      return;
+    }
+
+    setCockpitError(null);
+    setCockpitStatus(null);
+
+    startCredentialSave(async () => {
+      const draft = credentialDraft[selectedPlatform];
+
+      const result = await updatePersonaPlatformCredentialAction({
+        personaId: selectedPersona.id,
+        platform: selectedPlatform,
+        apiKey: isLinkedInPlatform ? "" : (draft?.apiKey ?? ""),
+        apiSecret: isLinkedInPlatform ? "" : (draft?.apiSecret ?? ""),
+        accessToken: isLinkedInPlatform ? "" : (draft?.accessToken ?? ""),
+        refreshToken: isLinkedInPlatform ? "" : (draft?.refreshToken ?? ""),
+        connectionHint: draft?.connectionHint ?? "",
+      });
+
+      if (!result.ok) {
+        setCockpitError(result.error);
+        return;
+      }
+
+      setCockpitStatus(
+        isLinkedInPlatform ? "LinkedIn manual setup saved." : `${selectedPlatform} credentials saved locally.`,
+      );
+      router.refresh();
+    });
+  };
+
+  const handleTestConnection = () => {
+    if (!selectedPersona) {
+      return;
+    }
+
+    setCockpitError(null);
+    setCockpitStatus(null);
+
+    startConnectionTest(async () => {
+      const result = await testPersonaPlatformConnectionAction({
+        personaId: selectedPersona.id,
+        platform: selectedPlatform,
+      });
+
+      if (!result.ok) {
+        setCockpitError(result.error);
+        return;
+      }
+
+      setCockpitStatus(`${isLinkedInPlatform ? "LinkedIn Manual Mode" : selectedPlatform}: ${result.data.message}`);
+      router.refresh();
+    });
+  };
+
   return (
     <div className="canvas-page">
       <div className="canvas-field">
         <ReactFlow
-          nodes={visibleNodes}
+          nodes={nodes}
           edges={[]}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
@@ -234,95 +625,482 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
         </div>
 
         <div className="canvas-actions">
-          <button className="primary-btn" onClick={() => setShowCreateForm(true)}>
+          <Button onClick={() => setShowCreateForm(true)}>
             <Plus size={16} />
             New Persona
-          </button>
+          </Button>
 
-          <select
-            className="platform-filter"
-            value={platformFilter}
-            onChange={(event) => setPlatformFilter(event.target.value as "ALL" | PlatformName)}
-            aria-label="Filter by platform"
-          >
-            {PLATFORM_FILTERS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          <Button variant="outline" onClick={() => setShowCreateNarrativeForm(true)}>
+            <Megaphone size={16} />
+            New Narrative
+          </Button>
 
-          <label className="search-input">
-            <Search size={14} />
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              type="search"
-              placeholder="Search personas"
-              aria-label="Search personas"
-            />
-          </label>
-
-          <button
+          <Button
             type="button"
-            className="icon-button"
+            size="icon"
+            variant="outline"
             aria-label="Zoom in"
             onClick={() => reactFlowInstance?.zoomIn({ duration: 150 })}
           >
             <ZoomIn size={15} />
-          </button>
+          </Button>
 
-          <button
+          <Button
             type="button"
-            className="icon-button"
+            size="icon"
+            variant="outline"
             aria-label="Zoom out"
             onClick={() => reactFlowInstance?.zoomOut({ duration: 150 })}
           >
             <ZoomOut size={15} />
-          </button>
+          </Button>
 
-          <Link className="ghost-btn" href="/approval-queue">
-            Approval Queue
-          </Link>
+          <Button asChild variant="outline">
+            <Link href="/approval-queue">Approval Queue</Link>
+          </Button>
 
-          <button type="button" className="icon-button" aria-label="Notifications">
+          <Button type="button" size="icon" variant="outline" aria-label="Notifications">
             <Bell size={16} />
-          </button>
+          </Button>
         </div>
       </div>
+
+      {/* ── Narrative sidebar ── */}
+      <aside className={`narrative-sidebar ${narrativeSidebarOpen ? "narrative-sidebar-open" : ""}`}>
+        <div className="cockpit-shell-title">
+          {selectedNarrative ? (
+            <>
+              <button
+                className="narrative-back-btn"
+                onClick={() => setSelectedNarrativeId(null)}
+                aria-label="Back to narratives list"
+              >
+                ← All Narratives
+              </button>
+              <h2 style={{ marginTop: "0.4rem" }}>{selectedNarrative.title}</h2>
+              <p>{selectedNarrative.description || "No description."}</p>
+            </>
+          ) : (
+            <>
+              <h2>Narratives</h2>
+              <p>
+                {narratives.length === 0
+                  ? "No narratives yet."
+                  : `${narratives.filter((n) => n.status === "active").length} active · ${narratives.length} total`}
+              </p>
+            </>
+          )}
+        </div>
+
+        {selectedNarrative ? (
+          <div className="space-y-4">
+            <section className="cockpit-section">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h3 className="cockpit-section-title">Status</h3>
+                <span className={`narrative-status-badge narrative-status-${selectedNarrative.status}`}>
+                  {selectedNarrative.status === "active" ? "Active" : "Draft"}
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleToggleNarrativeStatus(selectedNarrative.id)}
+              >
+                {selectedNarrative.status === "active" ? "Pause (set to Draft)" : "Activate"}
+              </Button>
+            </section>
+
+            <section className="cockpit-section">
+              <h3 className="cockpit-section-title">Assigned Personas</h3>
+              {allPersonas.length === 0 ? (
+                <p className="cockpit-section-note">No personas exist yet. Create one on the canvas.</p>
+              ) : (
+                <div className="narrative-persona-list">
+                  {allPersonas.map((persona) => {
+                    const assigned = selectedNarrative.assignedPersonaIds.includes(persona.id);
+                    return (
+                      <label key={persona.id} className="narrative-persona-row">
+                        <input
+                          type="checkbox"
+                          checked={assigned}
+                          onChange={() => handleToggleNarrativePersona(selectedNarrative.id, persona.id)}
+                        />
+                        <span
+                          className="persona-avatar"
+                          style={{ height: "1.5rem", width: "1.5rem", fontSize: "0.65rem", flexShrink: 0 }}
+                        >
+                          {persona.name.slice(0, 1).toUpperCase()}
+                        </span>
+                        <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>{persona.name}</span>
+                        <span
+                          style={{
+                            fontSize: "0.7rem",
+                            color: "var(--bb-ink-muted)",
+                            fontFamily: "var(--font-mono), monospace",
+                          }}
+                        >
+                          {persona.primaryHandle}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            <section className="cockpit-section">
+              <h3 className="cockpit-section-title">Post Cap per Persona</h3>
+              <p className="cockpit-section-note">
+                Max posts each assigned persona can make per platform for this narrative.
+              </p>
+              <div className="narrative-caps-grid">
+                {PLATFORM_LIST.map((platform) => (
+                  <label key={platform} className="cockpit-field">
+                    <span>{PLATFORM_NAMES[platform]}</span>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={50}
+                      value={selectedNarrative.postCaps[platform]}
+                      onChange={(e) =>
+                        handleUpdateNarrativePostCap(
+                          selectedNarrative.id,
+                          platform,
+                          Math.max(0, Math.min(50, Number(e.target.value))),
+                        )
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+            </section>
+          </div>
+        ) : (
+          <div className="narrative-list">
+            {narratives.length === 0 ? (
+              <div className="narrative-empty">
+                <Megaphone size={24} style={{ color: "var(--bb-ink-muted)", opacity: 0.4 }} />
+                <p>Create a narrative to broadcast a message through your personas.</p>
+                <Button size="sm" onClick={() => setShowCreateNarrativeForm(true)}>
+                  <Plus size={14} />
+                  New Narrative
+                </Button>
+              </div>
+            ) : (
+              narratives.map((narrative) => (
+                <button
+                  key={narrative.id}
+                  className="narrative-item"
+                  onClick={() => setSelectedNarrativeId(narrative.id)}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.4rem" }}>
+                    <span className="narrative-item-title">{narrative.title}</span>
+                    <span className={`narrative-status-badge narrative-status-${narrative.status}`}>
+                      {narrative.status === "active" ? "Active" : "Draft"}
+                    </span>
+                  </div>
+                  {narrative.description ? (
+                    <p className="narrative-item-desc">{narrative.description}</p>
+                  ) : null}
+                  <p className="narrative-item-meta">
+                    {narrative.assignedPersonaIds.length} persona
+                    {narrative.assignedPersonaIds.length !== 1 ? "s" : ""} assigned
+                  </p>
+                </button>
+              ))
+            )}
+          </div>
+        )}
+      </aside>
+
+      <Button
+        type="button"
+        size="default"
+        variant="outline"
+        className="narrative-toggle"
+        onClick={() => setNarrativeSidebarOpen((current) => !current)}
+        aria-label={narrativeSidebarOpen ? "Hide narratives" : "Show narratives"}
+      >
+        {narrativeSidebarOpen ? (
+          <>
+            <ChevronLeft size={16} /> Hide Narratives
+          </>
+        ) : (
+          <>
+            <ChevronRight size={16} /> Narratives
+          </>
+        )}
+      </Button>
 
       <aside className={`cockpit-floating ${cockpitOpen ? "cockpit-open" : ""}`}>
         <div className="cockpit-shell-title">
           <h2>Persona Cockpit</h2>
           <p>
             {selectedPersona
-              ? `Live controls for ${selectedPersona.name}.`
+              ? `Editing ${selectedPersona.name}.`
               : "Select a persona node to open live controls."}
           </p>
         </div>
 
-        {selectedPersona ? (
-          <div className="space-y-3">
-            <div className="dock-row">
-              <span>Name</span>
-              <span>{selectedPersona.name}</span>
-            </div>
-            <div className="dock-row">
-              <span>Handle</span>
-              <span>{selectedPersona.primaryHandle}</span>
-            </div>
-            <div className="dock-row">
-              <span>Tone</span>
-              <span>{selectedPersona.tone ?? "Not set"}</span>
-            </div>
-            <div className="dock-row">
-              <span>Location</span>
-              <span>{selectedPersona.location ?? "Not set"}</span>
-            </div>
+        {selectedPersona && profileDraft ? (
+          <div className="space-y-4">
+            <section className="cockpit-section">
+              <h3 className="cockpit-section-title">Personality & Profile</h3>
+              <div className="cockpit-grid">
+                <label className="cockpit-field">
+                  <span>Name</span>
+                  <Input
+                    value={profileDraft.name}
+                    onChange={(event) =>
+                      setProfileDraft((current) =>
+                        current ? { ...current, name: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
+                <label className="cockpit-field">
+                  <span>Handle</span>
+                  <Input
+                    value={profileDraft.primaryHandle}
+                    onChange={(event) =>
+                      setProfileDraft((current) =>
+                        current ? { ...current, primaryHandle: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
+                <label className="cockpit-field">
+                  <span>Age</span>
+                  <Input
+                    value={profileDraft.age}
+                    type="number"
+                    onChange={(event) =>
+                      setProfileDraft((current) =>
+                        current ? { ...current, age: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
+                <label className="cockpit-field">
+                  <span>Location</span>
+                  <Input
+                    value={profileDraft.location}
+                    onChange={(event) =>
+                      setProfileDraft((current) =>
+                        current ? { ...current, location: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
+                <label className="cockpit-field">
+                  <span>Political Stance</span>
+                  <Input
+                    value={profileDraft.politicalStance}
+                    onChange={(event) =>
+                      setProfileDraft((current) =>
+                        current ? { ...current, politicalStance: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
+                <label className="cockpit-field">
+                  <span>Tone</span>
+                  <Input
+                    value={profileDraft.tone}
+                    onChange={(event) =>
+                      setProfileDraft((current) =>
+                        current ? { ...current, tone: event.target.value } : current,
+                      )
+                    }
+                  />
+                </label>
+              </div>
+
+              <label className="cockpit-field">
+                <span>General Markdown Personality</span>
+                <Textarea
+                  className="min-h-28"
+                  value={profileDraft.bioMarkdown}
+                  onChange={(event) =>
+                    setProfileDraft((current) =>
+                      current ? { ...current, bioMarkdown: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+
+              <Button onClick={handleSaveProfile} disabled={isSavingProfile}>
+                {isSavingProfile ? "Saving..." : "Save Profile"}
+              </Button>
+            </section>
+
+            <section className="cockpit-section">
+              <h3 className="cockpit-section-title">Platform Style Guides</h3>
+              <div className="platform-tabs">
+                {PLATFORM_LIST.map((platform) => (
+                  <Button
+                    key={platform}
+                    variant={platform === selectedPlatform ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setSelectedPlatform(platform)}
+                  >
+                    {platform}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="platform-status-row">
+                <span
+                  className={`status-inline status-inline-${(selectedPlatformMeta?.connectionStatus ?? "DISCONNECTED").toLowerCase()}`}
+                >
+                  {STATUS_LABELS[selectedPlatformMeta?.connectionStatus ?? "DISCONNECTED"]}
+                </span>
+                <span>
+                  Last test: {selectedPlatformMeta?.lastTestedAt ? new Date(selectedPlatformMeta.lastTestedAt).toLocaleString() : "Never"}
+                </span>
+              </div>
+
+              <label className="cockpit-field">
+                <span>{selectedPlatform} Style Guide (Markdown)</span>
+                <Textarea
+                  className="min-h-28"
+                  value={styleDraft[selectedPlatform] ?? ""}
+                  onChange={(event) =>
+                    setStyleDraft((current) => ({
+                      ...current,
+                      [selectedPlatform]: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+
+              <Button onClick={handleSaveStyleGuide} disabled={isSavingStyle}>
+                {isSavingStyle ? "Saving..." : `Save ${selectedPlatform} Guide`}
+              </Button>
+            </section>
+
+            <section className="cockpit-section">
+              <h3 className="cockpit-section-title">Platform Credentials (Local)</h3>
+              <p className="cockpit-section-note">
+                {isLinkedInPlatform
+                  ? "LinkedIn API keys are disabled for MVP due to app approval limits. Use manual mode setup."
+                  : "Local MVP mode: credentials are stored in your local database for testing."}
+              </p>
+
+              {isLinkedInPlatform ? null : (
+                <>
+                  <label className="cockpit-field">
+                    <span>{selectedPlatform} API Key</span>
+                    <Input
+                      value={credentialDraft[selectedPlatform]?.apiKey ?? ""}
+                      onChange={(event) =>
+                        setCredentialDraft((current) => ({
+                          ...current,
+                          [selectedPlatform]: {
+                            ...current[selectedPlatform],
+                            apiKey: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label className="cockpit-field">
+                    <span>{selectedPlatform} API Secret</span>
+                    <Input
+                      value={credentialDraft[selectedPlatform]?.apiSecret ?? ""}
+                      onChange={(event) =>
+                        setCredentialDraft((current) => ({
+                          ...current,
+                          [selectedPlatform]: {
+                            ...current[selectedPlatform],
+                            apiSecret: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label className="cockpit-field">
+                    <span>{selectedPlatform} Access Token</span>
+                    <Input
+                      value={credentialDraft[selectedPlatform]?.accessToken ?? ""}
+                      onChange={(event) =>
+                        setCredentialDraft((current) => ({
+                          ...current,
+                          [selectedPlatform]: {
+                            ...current[selectedPlatform],
+                            accessToken: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label className="cockpit-field">
+                    <span>{selectedPlatform} Refresh Token</span>
+                    <Input
+                      value={credentialDraft[selectedPlatform]?.refreshToken ?? ""}
+                      onChange={(event) =>
+                        setCredentialDraft((current) => ({
+                          ...current,
+                          [selectedPlatform]: {
+                            ...current[selectedPlatform],
+                            refreshToken: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </label>
+                </>
+              )}
+
+              <label className="cockpit-field">
+                <span>{isLinkedInPlatform ? "LinkedIn profile URL (manual mode)" : "Connection Hint (optional)"}</span>
+                <Input
+                  value={credentialDraft[selectedPlatform]?.connectionHint ?? ""}
+                  onChange={(event) =>
+                    setCredentialDraft((current) => ({
+                      ...current,
+                      [selectedPlatform]: {
+                        ...current[selectedPlatform],
+                        connectionHint: event.target.value,
+                      },
+                    }))
+                  }
+                  placeholder={
+                    isLinkedInPlatform
+                      ? "https://www.linkedin.com/in/your-handle"
+                      : "Profile id, app id, or note for testing"
+                  }
+                />
+              </label>
+
+              <div className="cockpit-button-row">
+                <Button onClick={handleSaveCredential} disabled={isSavingCredential}>
+                  {isSavingCredential
+                    ? "Saving..."
+                    : isLinkedInPlatform
+                      ? "Save LinkedIn Manual Setup"
+                      : `Save ${selectedPlatform} Credentials`}
+                </Button>
+                <Button variant="outline" onClick={handleTestConnection} disabled={isTestingConnection}>
+                  {isTestingConnection
+                    ? "Testing..."
+                    : isLinkedInPlatform
+                      ? "Validate LinkedIn Manual Setup"
+                      : `Test ${selectedPlatform} Connection`}
+                </Button>
+              </div>
+            </section>
+
             <div className="dock-row">
               <span>Pending drafts</span>
               <span>{selectedPersona.pendingDrafts}</span>
             </div>
+
+            {cockpitStatus ? <p className="cockpit-status-success">{cockpitStatus}</p> : null}
+            {cockpitError ? <p className="cockpit-status-error">{cockpitError}</p> : null}
           </div>
         ) : (
           <div className="dock-row">
@@ -332,8 +1110,10 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
         )}
       </aside>
 
-      <button
+      <Button
         type="button"
+        size="default"
+        variant="outline"
         className="cockpit-toggle"
         onClick={() => setCockpitOpen((current) => !current)}
         aria-label={cockpitOpen ? "Hide persona cockpit" : "Show persona cockpit"}
@@ -347,38 +1127,96 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
             <ChevronLeft size={16} /> Open Cockpit
           </>
         )}
-      </button>
+      </Button>
 
-      {showCreateForm ? (
-        <div className="create-persona-modal" role="dialog" aria-modal="true" aria-label="Create new persona">
-          <form
-            className="create-persona-card"
-            action={handleCreatePersona}
-            onSubmit={() => {
-              setCreateError(null);
-            }}
-          >
-            <h3>Create New Persona</h3>
-            <label>
-              Name
-              <input name="name" required placeholder="Atlas Hume" />
+      <Dialog
+        open={showCreateNarrativeForm}
+        onOpenChange={(open) => {
+          setShowCreateNarrativeForm(open);
+          if (!open) setNarrativeFormError(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New Narrative</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <label className="cockpit-field">
+              Title
+              <Input
+                value={narrativeFormDraft.title}
+                placeholder="Product Launch Q2"
+                onChange={(e) => setNarrativeFormDraft((current) => ({ ...current, title: e.target.value }))}
+              />
             </label>
-            <label>
+            <label className="cockpit-field">
+              Description (optional)
+              <Textarea
+                value={narrativeFormDraft.description}
+                placeholder="Describe what this narrative is about..."
+                onChange={(e) => setNarrativeFormDraft((current) => ({ ...current, description: e.target.value }))}
+              />
+            </label>
+            {narrativeFormError ? <p className="form-error">{narrativeFormError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setShowCreateNarrativeForm(false);
+                setNarrativeFormError(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleCreateNarrative}>
+              Create Narrative
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={showCreateForm}
+        onOpenChange={(open) => {
+          setShowCreateForm(open);
+          if (!open) setCreateError(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create New Persona</DialogTitle>
+          </DialogHeader>
+          <form
+            action={handleCreatePersona}
+            onSubmit={() => setCreateError(null)}
+            className="grid gap-3"
+          >
+            <label className="cockpit-field">
+              Name
+              <Input name="name" required placeholder="Atlas Hume" />
+            </label>
+            <label className="cockpit-field">
               Primary Handle
-              <input name="primaryHandle" required placeholder="@atlashume" />
+              <Input name="primaryHandle" required placeholder="@atlashume" />
             </label>
             {createError ? <p className="form-error">{createError}</p> : null}
-            <div className="create-actions">
-              <button type="button" className="ghost-btn" onClick={() => setShowCreateForm(false)}>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowCreateForm(false)}
+              >
                 Cancel
-              </button>
-              <button type="submit" className="primary-btn" disabled={isPending}>
-                {isPending ? "Saving..." : "Create Persona"}
-              </button>
-            </div>
+              </Button>
+              <Button type="submit" disabled={isMutating}>
+                {isMutating ? "Saving..." : "Create Persona"}
+              </Button>
+            </DialogFooter>
           </form>
-        </div>
-      ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

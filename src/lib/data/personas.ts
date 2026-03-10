@@ -9,6 +9,17 @@ export async function listPersonas() {
           platform: true,
           connectionStatus: true,
           styleGuideMarkdown: true,
+          lastTestedAt: true,
+        },
+      },
+      credentials: {
+        select: {
+          platform: true,
+          apiKey: true,
+          apiSecret: true,
+          accessToken: true,
+          refreshToken: true,
+          connectionHint: true,
         },
       },
       drafts: {

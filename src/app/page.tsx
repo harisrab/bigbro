@@ -18,8 +18,12 @@ export default async function Home() {
     canvasY: persona.canvasY,
     pendingDrafts: persona.drafts.length,
     platforms: persona.platforms.map((platform) => ({
+      credential:
+        persona.credentials.find((credential) => credential.platform === platform.platform) ?? null,
       platform: platform.platform,
       connectionStatus: platform.connectionStatus,
+      styleGuideMarkdown: platform.styleGuideMarkdown,
+      lastTestedAt: platform.lastTestedAt?.toISOString() ?? null,
     })),
   }));
 

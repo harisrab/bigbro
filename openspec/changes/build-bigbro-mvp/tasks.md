@@ -15,10 +15,18 @@
 
 ## 4. Persona Cockpit and Approval Queue
 
-- [ ] 4.1 Implement right-side sliding persona cockpit with structured fields and markdown editors for general + platform style guides.
-- [ ] 4.2 Build Approval Queue page with pending draft cards and Approve / Reject actions backed by draft status updates.
+- [x] 4.1 Implement right-side sliding persona cockpit with structured fields and markdown editors for general + platform style guides.
+- [x] 4.2 Build Approval Queue page with pending draft cards and Approve / Reject actions backed by draft status updates.
 
 ## 5. Platform Connection Stubs (Security Deferred)
 
-- [ ] 5.1 Implement plain local credential persistence for platform keys and wire persona-platform save actions.
-- [ ] 5.2 Add per-platform connection test stubs and platform status indicators in nodes/cockpit without enabling autonomous posting.
+- [x] 5.1 Implement plain local credential persistence for platform keys and wire persona-platform save actions.
+- [x] 5.2 Add per-platform connection test stubs and platform status indicators in nodes/cockpit without enabling autonomous posting.
+
+## 6. Narrative System — Backend (Deferred)
+
+- [ ] 6.1 Add `Narrative` model to Prisma schema with fields: `id`, `title`, `description`, `status` (ACTIVE/DRAFT), `postCaps` (JSON), `createdAt`, `updatedAt`.
+- [ ] 6.2 Add `NarrativePersona` join table to track which personas are assigned to a narrative (many-to-many).
+- [ ] 6.3 Implement server actions: `createNarrativeAction`, `updateNarrativeAction`, `assignPersonaToNarrativeAction`, `updateNarrativePostCapsAction`.
+- [ ] 6.4 Add `listNarratives` data fetch and wire into canvas page server component so narratives hydrate from DB on load.
+- [ ] 6.5 Expose a narrative indicator on persona canvas nodes showing the active narrative name (if assigned).
