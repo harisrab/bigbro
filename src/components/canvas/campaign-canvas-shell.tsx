@@ -322,6 +322,7 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
   const [narratives, setNarratives] = useState<Narrative[]>([]);
   const [narrativeSidebarOpen, setNarrativeSidebarOpen] = useState(false);
   const [selectedNarrativeId, setSelectedNarrativeId] = useState<string | null>(null);
+  const [selectedNarrativePersonaId, setSelectedNarrativePersonaId] = useState<string | null>(null);
   const [showCreateNarrativeForm, setShowCreateNarrativeForm] = useState(false);
   const [narrativeFormDraft, setNarrativeFormDraft] = useState<NarrativeFormDraft>({ title: "", description: "" });
   const [narrativeFormError, setNarrativeFormError] = useState<string | null>(null);
@@ -371,12 +372,75 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
     setCockpitError(null);
   }, [selectedPersona]);
 
+  const allPersonas = useMemo(() => nodes.map((node) => node.data.persona), [nodes]);
+
   const selectedNarrative = useMemo(
     () => narratives.find((n) => n.id === selectedNarrativeId) ?? null,
     [narratives, selectedNarrativeId],
   );
 
-  const allPersonas = useMemo(() => nodes.map((node) => node.data.persona), [nodes]);
+  const assignedNarrativePersonas = useMemo(() => {
+    if (!selectedNarrative) {
+      return [];
+    }
+
+    return selectedNarrative.personaSettings.flatMap((setting) => {
+      const persona = allPersonas.find((candidate) => candidate.id === setting.personaId);
+      if (!persona) {
+        return [];
+      }
+      return [{ persona, settings: setting }];
+    });
+  }, [allPersonas, selectedNarrative]);
+
+  const availableNarrativePersonas = useMemo(() => {
+    if (!selectedNarrative) {
+      return [];
+    }
+
+    const assignedIds = new Set(selectedNarrative.personaSettings.map((setting) => setting.personaId));
+    return allPersonas.filter((persona) => !assignedIds.has(persona.id));
+  }, [allPersonas, selectedNarrative]);
+
+  const selectedNarrativePersonaSettings = useMemo(() => {
+    if (!selectedNarrative || !selectedNarrativePersonaId) {
+      return null;
+    }
+
+    return selectedNarrative.personaSettings.find((setting) => setting.personaId === selectedNarrativePersonaId) ?? null;
+  }, [selectedNarrative, selectedNarrativePersonaId]);
+
+  const selectedNarrativePersona = useMemo(() => {
+    if (!selectedNarrativePersonaSettings) {
+      return null;
+    }
+
+    return allPersonas.find((persona) => persona.id === selectedNarrativePersonaSettings.personaId) ?? null;
+  }, [allPersonas, selectedNarrativePersonaSettings]);
+
+  const selectedNarrativeScheduledPosts = useMemo(
+    () => (selectedNarrative ? countScheduledPosts(selectedNarrative.personaSettings) : 0),
+    [selectedNarrative],
+  );
+  const selectedNarrativeCanActivate = useMemo(
+    () => (selectedNarrative ? canActivateNarrative(selectedNarrative) : false),
+    [selectedNarrative],
+  );
+
+  useEffect(() => {
+    if (!selectedNarrative) {
+      setSelectedNarrativePersonaId(null);
+      return;
+    }
+
+    const assignedIds = selectedNarrative.personaSettings.map((setting) => setting.personaId);
+    setSelectedNarrativePersonaId((current) => {
+      if (current && assignedIds.includes(current)) {
+        return current;
+      }
+      return assignedIds[0] ?? null;
+    });
+  }, [selectedNarrative]);
 
   const selectedPlatformMeta = useMemo(
     () => selectedPersona?.platforms.find((platform) => platform.platform === selectedPlatform) ?? null,
@@ -395,36 +459,92 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
       title,
       description: narrativeFormDraft.description.trim(),
       status: "draft",
-      assignedPersonaIds: [],
-      postCaps: { ...DEFAULT_POST_CAPS },
+      personaSettings: [],
     };
     setNarratives((current) => [...current, newNarrative]);
     setSelectedNarrativeId(newNarrative.id);
+    setSelectedNarrativePersonaId(null);
     setNarrativeSidebarOpen(true);
     setShowCreateNarrativeForm(false);
     setNarrativeFormDraft({ title: "", description: "" });
     setNarrativeFormError(null);
   };
 
-  const handleToggleNarrativePersona = (narrativeId: string, personaId: string) => {
+  const handleAddNarrativePersona = (narrativeId: string, personaId: string) => {
+    setNarratives((current) =>
+      current.map((n) =>
+        n.id !== narrativeId
+          ? n
+          : n.personaSettings.some((setting) => setting.personaId === personaId)
+            ? n
+            : {
+                ...n,
+                personaSettings: [...n.personaSettings, { personaId, postCaps: buildNarrativePostCaps() }],
+              },
+      ),
+    );
+    setSelectedNarrativePersonaId(personaId);
+  };
+
+  const handleRemoveNarrativePersona = (narrativeId: string, personaId: string) => {
     setNarratives((current) =>
       current.map((n) =>
         n.id !== narrativeId
           ? n
           : {
               ...n,
-              assignedPersonaIds: n.assignedPersonaIds.includes(personaId)
-                ? n.assignedPersonaIds.filter((id) => id !== personaId)
-                : [...n.assignedPersonaIds, personaId],
+              personaSettings: n.personaSettings.filter((setting) => setting.personaId !== personaId),
             },
       ),
     );
   };
 
-  const handleUpdateNarrativePostCap = (narrativeId: string, platform: PlatformName, value: number) => {
+  const handleUpdateNarrativePostCap = (
+    narrativeId: string,
+    personaId: string,
+    platform: PlatformName,
+    value: number,
+  ) => {
     setNarratives((current) =>
       current.map((n) =>
-        n.id !== narrativeId ? n : { ...n, postCaps: { ...n.postCaps, [platform]: value } },
+        n.id !== narrativeId
+          ? n
+          : {
+              ...n,
+              personaSettings: n.personaSettings.map((setting) =>
+                setting.personaId !== personaId
+                  ? setting
+                  : {
+                      ...setting,
+                      postCaps: { ...setting.postCaps, [platform]: value },
+                    },
+              ),
+            },
+      ),
+    );
+  };
+
+  const handleApplyPostPreset = (narrativeId: string, personaId: string, presetValue: 0 | 1) => {
+    const nextCaps = buildNarrativePostCaps();
+    for (const platform of PLATFORM_LIST) {
+      nextCaps[platform] = presetValue;
+    }
+
+    setNarratives((current) =>
+      current.map((n) =>
+        n.id !== narrativeId
+          ? n
+          : {
+              ...n,
+              personaSettings: n.personaSettings.map((setting) =>
+                setting.personaId !== personaId
+                  ? setting
+                  : {
+                      ...setting,
+                      postCaps: nextCaps,
+                    },
+              ),
+            },
       ),
     );
   };
@@ -432,7 +552,11 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
   const handleToggleNarrativeStatus = (narrativeId: string) => {
     setNarratives((current) =>
       current.map((n) =>
-        n.id !== narrativeId ? n : { ...n, status: n.status === "active" ? "draft" : "active" },
+        n.id !== narrativeId
+          ? n
+          : n.status === "draft" && !canActivateNarrative(n)
+            ? n
+            : { ...n, status: n.status === "active" ? "draft" : "active" },
       ),
     );
   };
@@ -678,7 +802,7 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
                 ← All Narratives
               </button>
               <h2 style={{ marginTop: "0.4rem" }}>{selectedNarrative.title}</h2>
-              <p>{selectedNarrative.description || "No description."}</p>
+              <p>{selectedNarrative.description || "Add details so collaborators know the goal."}</p>
             </>
           ) : (
             <>
@@ -695,53 +819,107 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
         {selectedNarrative ? (
           <div className="space-y-4">
             <section className="cockpit-section">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <h3 className="cockpit-section-title">Status</h3>
+              <div className="narrative-header-row">
+                <h3 className="cockpit-section-title">Activation</h3>
                 <span className={`narrative-status-badge narrative-status-${selectedNarrative.status}`}>
                   {selectedNarrative.status === "active" ? "Active" : "Draft"}
                 </span>
               </div>
+              <p className="cockpit-section-note">
+                {selectedNarrative.personaSettings.length} persona
+                {selectedNarrative.personaSettings.length === 1 ? "" : "s"} assigned · {selectedNarrativeScheduledPosts}{" "}
+                scheduled posts
+              </p>
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => handleToggleNarrativeStatus(selectedNarrative.id)}
+                disabled={selectedNarrative.status === "draft" && !selectedNarrativeCanActivate}
               >
                 {selectedNarrative.status === "active" ? "Pause (set to Draft)" : "Activate"}
               </Button>
+              {selectedNarrative.status === "draft" && !selectedNarrativeCanActivate ? (
+                <p className="cockpit-section-note">
+                  To activate: add at least one persona and set at least one post cap above 0.
+                </p>
+              ) : null}
             </section>
 
             <section className="cockpit-section">
-              <h3 className="cockpit-section-title">Assigned Personas</h3>
+              <h3 className="cockpit-section-title">Add Personas</h3>
               {allPersonas.length === 0 ? (
                 <p className="cockpit-section-note">No personas exist yet. Create one on the canvas.</p>
+              ) : availableNarrativePersonas.length === 0 ? (
+                <p className="cockpit-section-note">All personas are already added to this narrative.</p>
               ) : (
                 <div className="narrative-persona-list">
-                  {allPersonas.map((persona) => {
-                    const assigned = selectedNarrative.assignedPersonaIds.includes(persona.id);
-                    return (
-                      <label key={persona.id} className="narrative-persona-row">
-                        <input
-                          type="checkbox"
-                          checked={assigned}
-                          onChange={() => handleToggleNarrativePersona(selectedNarrative.id, persona.id)}
-                        />
+                  {availableNarrativePersonas.map((persona) => (
+                    <div key={persona.id} className="narrative-persona-row">
+                      <div className="narrative-persona-row-main">
                         <span
                           className="persona-avatar"
                           style={{ height: "1.5rem", width: "1.5rem", fontSize: "0.65rem", flexShrink: 0 }}
                         >
                           {persona.name.slice(0, 1).toUpperCase()}
                         </span>
-                        <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>{persona.name}</span>
-                        <span
-                          style={{
-                            fontSize: "0.7rem",
-                            color: "var(--bb-ink-muted)",
-                            fontFamily: "var(--font-mono), monospace",
-                          }}
+                        <div className="narrative-persona-labels">
+                          <span className="narrative-persona-name">{persona.name}</span>
+                          <span className="narrative-persona-handle">{persona.primaryHandle}</span>
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleAddNarrativePersona(selectedNarrative.id, persona.id)}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="cockpit-section">
+              <h3 className="cockpit-section-title">Assigned Personas</h3>
+              {assignedNarrativePersonas.length === 0 ? (
+                <p className="cockpit-section-note">No one assigned yet. Add a persona above.</p>
+              ) : (
+                <div className="narrative-persona-list">
+                  {assignedNarrativePersonas.map(({ persona, settings }) => {
+                    const isSelected = selectedNarrativePersonaId === persona.id;
+                    const scheduledPostsForPersona = PLATFORM_LIST.reduce(
+                      (sum, platform) => sum + (settings.postCaps[platform] ?? 0),
+                      0,
+                    );
+                    return (
+                      <div key={persona.id} className={`narrative-assigned-row ${isSelected ? "narrative-assigned-selected" : ""}`}>
+                        <button
+                          type="button"
+                          className="narrative-assigned-select"
+                          onClick={() => setSelectedNarrativePersonaId(persona.id)}
                         >
-                          {persona.primaryHandle}
-                        </span>
-                      </label>
+                          <span
+                            className="persona-avatar"
+                            style={{ height: "1.5rem", width: "1.5rem", fontSize: "0.65rem", flexShrink: 0 }}
+                          >
+                            {persona.name.slice(0, 1).toUpperCase()}
+                          </span>
+                          <div className="narrative-persona-labels">
+                            <span className="narrative-persona-name">{persona.name}</span>
+                            <span className="narrative-persona-handle">{persona.primaryHandle}</span>
+                          </div>
+                          <span className="narrative-assigned-posts">{scheduledPostsForPersona} posts</span>
+                        </button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleRemoveNarrativePersona(selectedNarrative.id, persona.id)}
+                        >
+                          Remove
+                        </Button>
+                      </div>
                     );
                   })}
                 </div>
@@ -749,34 +927,79 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
             </section>
 
             <section className="cockpit-section">
-              <h3 className="cockpit-section-title">Post Cap per Persona</h3>
+              <h3 className="cockpit-section-title">Persona-Specific Posting</h3>
               <p className="cockpit-section-note">
-                Max posts each assigned persona can make per platform for this narrative.
+                Defaults begin at 0. Pick an assigned persona and tune their limits.
               </p>
-              <div className="narrative-caps-grid">
-                {PLATFORM_LIST.map((platform) => (
-                  <label key={platform} className="cockpit-field">
-                    <span>{PLATFORM_NAMES[platform]}</span>
-                    <Input
-                      type="number"
-                      min={0}
-                      max={50}
-                      value={selectedNarrative.postCaps[platform]}
-                      onChange={(e) =>
-                        handleUpdateNarrativePostCap(
-                          selectedNarrative.id,
-                          platform,
-                          Math.max(0, Math.min(50, Number(e.target.value))),
-                        )
-                      }
-                    />
-                  </label>
-                ))}
-              </div>
+              {selectedNarrativePersona && selectedNarrativePersonaSettings ? (
+                <>
+                  <div className="narrative-persona-settings-head">
+                    <div className="narrative-persona-row-main">
+                      <span
+                        className="persona-avatar"
+                        style={{ height: "1.5rem", width: "1.5rem", fontSize: "0.65rem", flexShrink: 0 }}
+                      >
+                        {selectedNarrativePersona.name.slice(0, 1).toUpperCase()}
+                      </span>
+                      <div className="narrative-persona-labels">
+                        <span className="narrative-persona-name">{selectedNarrativePersona.name}</span>
+                        <span className="narrative-persona-handle">{selectedNarrativePersona.primaryHandle}</span>
+                      </div>
+                    </div>
+                    <div className="narrative-preset-row">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleApplyPostPreset(selectedNarrative.id, selectedNarrativePersona.id, 0)}
+                      >
+                        All 0
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleApplyPostPreset(selectedNarrative.id, selectedNarrativePersona.id, 1)}
+                      >
+                        All 1
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="narrative-caps-grid">
+                    {PLATFORM_LIST.map((platform) => (
+                      <label key={platform} className="cockpit-field">
+                        <span>{PLATFORM_NAMES[platform]}</span>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={50}
+                          value={selectedNarrativePersonaSettings.postCaps[platform]}
+                          onChange={(e) =>
+                            handleUpdateNarrativePostCap(
+                              selectedNarrative.id,
+                              selectedNarrativePersona.id,
+                              platform,
+                              Math.max(0, Math.min(50, Number(e.target.value))),
+                            )
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="cockpit-section-note">
+                  Select an assigned persona to edit their posting settings.
+                </p>
+              )}
             </section>
           </div>
         ) : (
           <div className="narrative-list">
+            <div className="narrative-list-toolbar">
+              <Button size="sm" onClick={() => setShowCreateNarrativeForm(true)}>
+                <Plus size={14} />
+                New Narrative
+              </Button>
+            </div>
             {narratives.length === 0 ? (
               <div className="narrative-empty">
                 <Megaphone size={24} style={{ color: "var(--bb-ink-muted)", opacity: 0.4 }} />
@@ -793,7 +1016,7 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
                   className="narrative-item"
                   onClick={() => setSelectedNarrativeId(narrative.id)}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.4rem" }}>
+                  <div className="narrative-header-row">
                     <span className="narrative-item-title">{narrative.title}</span>
                     <span className={`narrative-status-badge narrative-status-${narrative.status}`}>
                       {narrative.status === "active" ? "Active" : "Draft"}
@@ -803,8 +1026,10 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
                     <p className="narrative-item-desc">{narrative.description}</p>
                   ) : null}
                   <p className="narrative-item-meta">
-                    {narrative.assignedPersonaIds.length} persona
-                    {narrative.assignedPersonaIds.length !== 1 ? "s" : ""} assigned
+                    {narrative.personaSettings.length} persona
+                    {narrative.personaSettings.length !== 1 ? "s" : ""} assigned ·{" "}
+                    {countScheduledPosts(narrative.personaSettings)} posts configured ·{" "}
+                    {canActivateNarrative(narrative) ? "ready" : "needs setup"}
                   </p>
                 </button>
               ))
@@ -1157,6 +1382,9 @@ export function CampaignCanvasShell({ initialPersonas }: { initialPersonas: Canv
                 onChange={(e) => setNarrativeFormDraft((current) => ({ ...current, description: e.target.value }))}
               />
             </label>
+            <p className="cockpit-section-note">
+              Assigned personas start with post limits set to 0 on every platform.
+            </p>
             {narrativeFormError ? <p className="form-error">{narrativeFormError}</p> : null}
           </div>
           <DialogFooter>
